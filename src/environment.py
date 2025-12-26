@@ -164,3 +164,104 @@ class HardenedLegionEnv:
             rewards[dead] -= 5.0 # Reduced from -20
 
         return self.get_state_package(), rewards, minerals
+
+class AeroEnv:
+    def __init__(self, num_agents=10):
+        self.num_agents = num_agents
+        self.pos = np.zeros((num_agents, 2))
+        self.vel = np.zeros((num_agents, 2))
+        self.angle = np.zeros(num_agents)
+        self.energy = np.ones(num_agents)
+        self.drag_mods = np.ones(num_agents)
+        self.reset()
+
+    def reset(self):
+        self.pos[:,0] = np.random.uniform(2,5, self.num_agents)
+        self.pos[:,1] = np.random.uniform(2,18, self.num_agents)
+        self.vel *= 0; self.energy[:] = 1.0
+        return self.get_obs()
+
+    def get_obs(self):
+        obs = []
+        for i in range(self.num_agents):
+            # Drafting Logic
+            self.drag_mods[i] = 1.0
+            for j in range(self.num_agents):
+                if i==j: continue
+                rel = self.pos[i] - self.pos[j]
+                if np.linalg.norm(rel) < 5.0 and rel[0] < 0: # Behind
+                    self.drag_mods[i] = 0.6 # Draft
+
+            # Fake Lidar
+            lidar = np.random.rand(16)
+            obs.append(np.concatenate([lidar, self.vel[i]/5.0, [self.energy[i], self.drag_mods[i]]]))
+        return torch.FloatTensor(np.array(obs)).to(device)
+
+    def step(self, actions):
+        # actions: thrust, steer
+        thrust = actions[:,0]*5; steer = actions[:,1]*2
+        self.angle += steer * 0.1
+        head = np.stack([np.cos(self.angle), np.sin(self.angle)], axis=1)
+
+        # Drag
+        v_air = self.vel - np.array([-2.0, 0.0]) # Wind
+        drag = -0.5 * 1.2 * np.linalg.norm(v_air, axis=1, keepdims=True) * v_air * self.drag_mods[:,None]
+
+        self.vel += ((head * thrust[:,None]) + drag) / 2.0 * 0.1
+        self.pos += self.vel * 0.1
+
+        self.energy -= (thrust * 0.05 * 0.1)
+
+        r = self.vel[:,0] * 0.1 # Forward progress
+        r[self.energy <= 0] -= 10.0
+
+        # Reset out of bounds
+        reset_mask = (self.pos[:,1] < 0) | (self.pos[:,1] > 20) | (self.energy <= 0)
+        self.pos[reset_mask, 0] = 5.0
+        self.energy[reset_mask] = 1.0
+
+        return self.get_obs(), r
+
+class FinanceEnv:
+    def __init__(self):
+        self.len = 1000; self.n_assets = 20
+        t = np.linspace(0, 100, self.len)
+        base = np.sin(t)*10 + t*0.5
+        self.prices = np.array([base + np.random.normal(0,2,self.len) for _ in range(self.n_assets)]).T
+        # Crash
+        self.prices[700:750] *= 0.6
+        self.reset()
+
+    def reset(self):
+        self.t = 40; self.bal = 10000.0; self.pos = np.zeros(self.n_assets)
+        self.hist = [10000.0]
+        return self.get_obs()
+
+    def get_obs(self):
+        # Simplified: Price history of last 40 steps
+        raw = self.prices[self.t-40:self.t] # (40, 20)
+        norm = (raw - np.mean(raw, axis=0)) / (np.std(raw, axis=0)+1e-5)
+        # Transpose for CNN: (20, 1, 40)
+        return torch.FloatTensor(norm.T).unsqueeze(1).to(device)
+
+    def step(self, actions):
+        # 0=Hold, 1=Buy, 2=Sell
+        cur_p = self.prices[self.t]
+        for i, a in enumerate(actions):
+            if a==1 and self.bal > cur_p[i]:
+                amt = self.bal * 0.1; self.bal -= amt; self.pos[i] += amt/cur_p[i]
+            elif a==2 and self.pos[i] > 0:
+                self.bal += self.pos[i]*cur_p[i]; self.pos[i]=0
+
+        self.t += 1
+        done = self.t >= self.len-1
+        new_val = self.bal + np.sum(self.pos * self.prices[self.t])
+
+        # Alpha Reward
+        mkt_ret = np.mean((self.prices[self.t]-cur_p)/cur_p)
+        my_ret = (new_val - self.hist[-1])/self.hist[-1]
+
+        r_scalar = (my_ret - mkt_ret) * 100.0
+
+        self.hist.append(new_val)
+        return self.get_obs(), r_scalar, new_val, done

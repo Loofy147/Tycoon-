@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import os
 
-from src.model import HardenedLegionNet
-from src.environment import HardenedLegionEnv
+from src.model import HardenedLegionNet, AeroNet, TraderNet
+from src.environment import HardenedLegionEnv, AeroEnv, FinanceEnv
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -173,8 +173,87 @@ def run_hivemind(args):
 
         ani = animation.FuncAnimation(fig, update, frames=len(viz_pos), interval=30)
         try:
-            ani.save('outputs/final_legion.gif', writer='pillow', fps=30)
-            print("Visualization Saved: outputs/final_legion.gif")
+            ani.save('outputs/master_swarm.gif', writer='pillow', fps=30)
+            print("Visualization Saved: outputs/master_swarm.gif")
         except Exception as e:
             print(f"Error saving animation: {e}")
             plt.show()
+
+def run_aero(epochs=15):
+    print("\n>>> LAUNCHING PROJECT AEOLUS...")
+    env = AeroEnv(10)
+    net = AeroNet().to(device)
+    opt = optim.Adam(net.parameters(), lr=0.001)
+    act_map = [(t,s) for t in [0,0.5,1] for s in [-1,0,1]]
+
+    viz_pos = []
+    for ep in range(epochs):
+        s = env.reset()
+        dist = 0
+        for t in range(200):
+            with torch.no_grad():
+                q = net(s)
+                a_idx = [q[i].argmax().item() if random.random()>0.1 else random.randint(0,8) for i in range(10)]
+
+            act = np.array([act_map[i] for i in a_idx])
+            ns, r = env.step(act)
+            dist += np.mean(env.vel[:,0])
+
+            opt.zero_grad()
+            q_curr = net(s)[range(10), a_idx]
+            with torch.no_grad(): q_next = net(ns).max(1)[0]
+            td = torch.FloatTensor(r).to(device) - net.rho + 0.98*q_next
+            F.mse_loss(q_curr, td).backward(); opt.step()
+
+            with torch.no_grad(): net.rho += 0.01 * (torch.FloatTensor(r).to(device) + 0.98*q_next - q_curr).mean()
+            s = ns
+            if ep == epochs-1: viz_pos.append(env.pos.copy())
+
+        print(f"Gen {ep+1}: Dist {dist:.1f} | Rho {net.rho.item():.3f}")
+
+    fig, ax = plt.subplots(figsize=(10,4))
+    ax.set_xlim(0,50); ax.set_ylim(0,20)
+    scat = ax.scatter([], [])
+    def up(i): scat.set_offsets(viz_pos[i]); return scat,
+    ani = animation.FuncAnimation(fig, up, frames=len(viz_pos))
+    try:
+        ani.save('outputs/aero.gif', writer='pillow', fps=30)
+    except Exception as e:
+        print(f"Failed to save animation: {e}")
+
+def run_finance(epochs=15):
+    print("\n>>> LAUNCHING WOLF ALGO...")
+    env = FinanceEnv()
+    net = TraderNet().to(device)
+    opt = optim.Adam(net.parameters(), lr=0.001)
+
+    hist = []
+    for ep in range(epochs):
+        obs = env.reset()
+        done = False
+        while not done:
+            with torch.no_grad():
+                q = net(obs)
+                act = q.argmax(1).cpu().numpy()
+                if random.random() < 0.1: act = np.random.randint(0,3,20)
+
+            n_obs, r_scalar, val, done = env.step(act)
+
+            opt.zero_grad()
+            q_curr = net(obs)[range(20), act]
+            with torch.no_grad(): q_next = net(n_obs).max(1)[0]
+
+            r_tensor = torch.tensor(r_scalar, dtype=torch.float32, device=device)
+            td = r_tensor - net.rho + 0.99*q_next
+
+            F.mse_loss(q_curr, td).backward(); opt.step()
+
+            with torch.no_grad(): net.rho += 0.01 * (r_tensor + 0.99*q_next - q_curr).mean()
+            obs = n_obs
+
+        print(f"Gen {ep+1}: Value ${val:.0f} | Rho {net.rho.item():.3f}")
+        if ep == epochs-1: hist = env.hist
+
+    plt.figure()
+    plt.plot(hist, label='AI'); plt.legend(); plt.title('Portfolio')
+    plt.savefig('outputs/finance.png')

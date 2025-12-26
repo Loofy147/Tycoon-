@@ -15,6 +15,19 @@ This result confirms that the system's incentives are correctly aligned and that
 
 ![Master Swarm](outputs/master_swarm.gif)
 
+## The Golden Legion
+
+The "Golden Legion" is an upgraded version of the original Legion simulation, featuring several key improvements:
+
+*   **PopArt Reward Normalization:** Dynamically normalizes rewards to a mean of 0 and a standard deviation of 1, improving training stability.
+*   **GRU Agent Memory:** A Gated Recurrent Unit (GRU) has been added to the agent's neural network, allowing it to maintain a memory of past states.
+
+These enhancements result in a more robust and intelligent swarm, capable of learning complex strategies and adapting to a changing environment.
+
+### Golden Legion Swarm
+
+![Golden Legion Swarm](outputs/legion_brain_golden.gif)
+
 ## Financial Stress Test
 
 The "Wolf (Finance)" experiment demonstrates the system's ability to learn and adapt in a volatile financial environment. The agents, tasked with shorting the market during a crash, were able to effectively leverage the "Short/Sell" mechanism to generate significant returns. This validates that the inputs (price history) are effectively driving decisions.
